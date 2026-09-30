@@ -1,0 +1,119 @@
+name: Build and Push Docker Images
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: write
+
+env:
+  AWS_REGION: ap-northeast-1
+  AWS_ACCOUNT_ID: "686458136675"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::686458136675:role/github-oidc
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      ###########################################################
+      # Build Vote Image
+      ###########################################################
+
+      - name: Build Vote Image
+        run: |
+          docker build -t vote:${{ github.sha }} ./vote
+
+      - name: Tag Vote Image
+        run: |
+          docker tag vote:${{ github.sha }} \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/example-voting-app-vote:${{ github.sha }}
+
+      - name: Push Vote Image
+        run: |
+          docker push \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/example-voting-app-vote:${{ github.sha }}
+
+      - name: Update Kubernetes Manifest
+        run: |
+          sed -i "s|image: .*example-voting-app-vote:.*|image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/example-voting-app-vote:${{ github.sha }}|g" \
+          k8s-specifications/vote-deployment.yaml    
+
+      ###########################################################
+      # Build Worker Image
+      ###########################################################
+
+      - name: Build Worker Image
+        run: |
+          docker build -t worker:${{ github.sha }} ./worker
+
+      - name: Tag Worker Image
+        run: |
+          docker tag worker:${{ github.sha }} \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/example-voting-app-worker:${{ github.sha }}
+
+      - name: Push Worker Image
+        run: |
+          docker push \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/example-voting-app-worker:${{ github.sha }}
+
+
+      - name: Update Kubernetes Manifest
+        run: |
+          sed -i "s|image: .*example-voting-app-worker:.*|image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/example-voting-app-worker:${{ github.sha }}|g" \
+          k8s-specifications/worker-deployment.yaml   
+
+      ###########################################################
+      # Build Result Image
+      ###########################################################
+
+      - name: Build Result Image
+        run: |
+          docker build -t result:${{ github.sha }} ./result
+
+      - name: Tag Result Image
+        run: |
+          docker tag result:${{ github.sha }} \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/example-voting-app-result:${{ github.sha }}
+
+      - name: Push Result Image
+        run: |
+          docker push \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/example-voting-app-result:${{ github.sha }}
+
+      - name: Update Kubernetes Manifest
+        run: |
+          sed -i "s|image: .*example-voting-app-result:.*|image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/example-voting-app-result:${{ github.sha }}|g" \
+          k8s-specifications/result-deployment.yaml    
+          
+      ###############################################################
+      # Commit the changes back to the repo
+      ###############################################################
+      
+      - name: Commit Updated Manifests
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add k8s-specifications/
+
+          git commit -m "Update image tags to ${{ github.sha }}" || echo "Nothing to commit"
+
+          git push
